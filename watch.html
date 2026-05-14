@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="dark">
+    <title>Purple GO Watch</title>
+    <link rel="preconnect" href="https://player.twitch.tv" crossorigin>
+    <link rel="dns-prefetch" href="https://player.twitch.tv">
+    <link rel="stylesheet" href="watch.css">
+    <script src="watch.js" defer></script>
+  </head>
+  <body>
+    <main class="watch-app">
+      <div class="watch-toolbar">
+        <strong>Purple GO Watch</strong>
+        <button id="resetButton" type="button">重新排列</button>
+        <a href="./">回主頁</a>
+      </div>
+      <section class="watch-canvas" id="watchCanvas" aria-label="獨立觀看畫布"></section>
+      <div class="empty" id="emptyState" hidden>沒有指定頻道</div>
+    </main>
+  </body>
+</html>

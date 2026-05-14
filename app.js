@@ -6,6 +6,11 @@ const PREVIEW_HEIGHT = 180;
 const LIVE_PREVIEW_MIN_BYTES = 4096;
 const OFFLINE_PREVIEW_MAX_AGE = 3600;
 const CUSTOM_CHANNELS_KEY = "purple-go:custom-channels";
+const WATCH_WINDOW_TYPES = [
+  { id: "player", label: "直播" },
+  { id: "chat", label: "聊天室" },
+];
+const watchResizeObservers = new Map();
 
 const RESERVED_TWITCH_PATHS = new Set([
   "about",
@@ -43,7 +48,9 @@ const state = {
   filter: "live",
   query: "",
   selectedLogins: [],
-  watchLayout: "paired",
+  watchWindows: {},
+  closedWatchWindows: new Set(),
+  nextWindowZ: 1,
   statusSource: "Sheet",
   lastUpdated: "",
   isRefreshing: false,
@@ -71,6 +78,7 @@ const elements = {
   emptyState: document.querySelector("#emptyState"),
   sourceBadge: document.querySelector("#sourceBadge"),
   watchTitle: document.querySelector("#watchTitle"),
+  openWatchPageButton: document.querySelector("#openWatchPageButton"),
   watchLayoutButton: document.querySelector("#watchLayoutButton"),
   watchLayoutLabel: document.querySelector("#watchLayoutLabel"),
   watchShell: document.querySelector("#watchShell"),
@@ -98,7 +106,8 @@ function bindEvents() {
   elements.removeCustomChannelButton.addEventListener("click", () => {
     removeCustomChannel(elements.customChannelMenu.dataset.login);
   });
-  elements.watchLayoutButton.addEventListener("click", () => toggleWatchLayout());
+  elements.openWatchPageButton.addEventListener("click", () => openStandaloneWatchPage());
+  elements.watchLayoutButton.addEventListener("click", () => resetWatchWindowsLayout());
 
   elements.searchInput.addEventListener("input", (event) => {
     state.query = event.target.value.trim().toLowerCase();
@@ -329,6 +338,7 @@ function removeCustomChannel(login) {
   } else {
     state.channels = state.channels.filter((item) => item.login !== login);
     state.selectedLogins = state.selectedLogins.filter((item) => item !== login);
+    removeWatchWindowState(login);
   }
 
   saveCustomChannels();
@@ -515,10 +525,9 @@ function mergeStatus(statuses) {
     };
   });
 
-  const liveLogins = new Set(
-    state.channels.filter((channel) => channel.isLive).map((channel) => channel.login)
+  state.selectedLogins = state.selectedLogins.filter((login) =>
+    state.channels.some((channel) => channel.login === login)
   );
-  state.selectedLogins = state.selectedLogins.filter((login) => liveLogins.has(login));
 }
 
 function render() {
@@ -588,14 +597,29 @@ function renderChannels() {
 function toggleSelectedChannel(login) {
   if (state.selectedLogins.includes(login)) {
     state.selectedLogins = state.selectedLogins.filter((item) => item !== login);
+    removeWatchWindowState(login);
     return;
   }
+  clearClosedWatchWindows(login);
   state.selectedLogins = [...state.selectedLogins, login];
 }
 
-function toggleWatchLayout() {
-  state.watchLayout = state.watchLayout === "paired" ? "single" : "paired";
+function resetWatchWindowsLayout() {
+  state.watchWindows = {};
   renderWatch();
+}
+
+function openStandaloneWatchPage() {
+  const channels = state.selectedLogins
+    .map((login) => state.channels.find((channel) => channel.login === login))
+    .filter(Boolean)
+    .map((channel) => channel.login);
+
+  if (!channels.length) return;
+
+  const url = new URL("watch.html", window.location.href);
+  url.searchParams.set("channels", channels.join(","));
+  window.open(url.toString(), "_blank", "noopener,noreferrer");
 }
 
 function pickRandomLiveChannels(count) {
@@ -605,6 +629,11 @@ function pickRandomLiveChannels(count) {
     .map((channel) => channel.login);
 
   state.selectedLogins = picked;
+  picked.forEach(clearClosedWatchWindows);
+  Object.keys(state.watchWindows).forEach((key) => {
+    const login = key.split(":")[0];
+    if (!picked.includes(login)) delete state.watchWindows[key];
+  });
   renderChannels();
   renderWatch();
 
@@ -665,10 +694,12 @@ function renderChannelCard(channel) {
 function renderWatch() {
   const selectedChannels = state.selectedLogins
     .map((login) => state.channels.find((item) => item.login === login))
-    .filter((channel) => channel?.isLive);
+    .filter(Boolean);
 
   if (!selectedChannels.length) {
+    clearWatchWindows();
     elements.watchTitle.textContent = "選擇開台中的頻道";
+    elements.openWatchPageButton.hidden = true;
     elements.watchLayoutButton.hidden = true;
     elements.watchShell.className = "watch-shell";
     elements.watchShell.innerHTML = `
@@ -681,66 +712,325 @@ function renderWatch() {
     return;
   }
 
-  const parents = getTwitchParents();
-  const parentParams = parents
-    .map((parent) => `parent=${encodeURIComponent(parent)}`)
-    .join("&");
   elements.watchTitle.textContent = `已選擇 ${selectedChannels.length} 個頻道`;
+  elements.openWatchPageButton.hidden = false;
   elements.watchLayoutButton.hidden = false;
-  elements.watchLayoutButton.setAttribute(
-    "aria-pressed",
-    state.watchLayout === "paired" ? "true" : "false"
-  );
-  elements.watchLayoutLabel.textContent =
-    state.watchLayout === "paired" ? "不要並排" : "兩兩並排";
-  elements.watchShell.className = `watch-shell has-streams layout-${state.watchLayout}`;
-  elements.watchShell.innerHTML = `
-    <div class="watch-stack">
-      ${selectedChannels.map((channel) => renderWatchEntry(channel, parentParams)).join("")}
-    </div>
-  `;
+  elements.watchLayoutButton.removeAttribute("aria-pressed");
+  elements.watchLayoutLabel.textContent = "重新排列";
+  elements.watchShell.className = "watch-shell has-streams canvas-mode";
+
+  let canvas = elements.watchShell.querySelector(".watch-canvas");
+  if (!canvas) {
+    elements.watchShell.textContent = "";
+    canvas = document.createElement("div");
+    canvas.className = "watch-canvas";
+    elements.watchShell.append(canvas);
+  }
+
+  syncWatchCanvasHeight(canvas, selectedChannels.length);
+
+  const activeKeys = new Set();
+  selectedChannels.forEach((channel, channelIndex) => {
+    WATCH_WINDOW_TYPES.forEach((type) => {
+      const key = getWatchWindowKey(channel.login, type.id);
+      if (state.closedWatchWindows.has(key)) return;
+      activeKeys.add(key);
+
+      let windowElement = canvas.querySelector(
+        `.canvas-window[data-window-key="${cssEscape(key)}"]`
+      );
+      if (!windowElement) {
+        windowElement = createCanvasWindow(channel, type, channelIndex);
+        canvas.append(windowElement);
+        observeCanvasWindowResize(windowElement, key);
+      } else {
+        updateCanvasWindow(windowElement, channel, type);
+      }
+      applyCanvasWindowLayout(windowElement, key, channelIndex, type.id, canvas);
+    });
+  });
+
+  canvas.querySelectorAll(".canvas-window").forEach((windowElement) => {
+    const key = windowElement.dataset.windowKey;
+    if (!activeKeys.has(key)) {
+      unobserveCanvasWindowResize(key);
+      windowElement.remove();
+    }
+  });
+
   renderIcons();
 }
 
-function renderWatchEntry(channel, parentParams) {
-  const playerUrl = `https://player.twitch.tv/?channel=${encodeURIComponent(channel.login)}&${parentParams}&autoplay=true&muted=false`;
-  const chatUrl = `https://www.twitch.tv/embed/${encodeURIComponent(channel.login)}/chat?${parentParams}&darkpopout`;
-  const title = channel.displayName || channel.label;
+function createCanvasWindow(channel, type, channelIndex) {
+  const key = getWatchWindowKey(channel.login, type.id);
+  const windowElement = document.createElement("article");
+  windowElement.className = `canvas-window ${type.id === "chat" ? "is-chat" : "is-player"}`;
+  windowElement.dataset.windowKey = key;
+  windowElement.dataset.login = channel.login;
+  windowElement.dataset.type = type.id;
 
-  return `
-    <article class="watch-entry">
-      <div class="watch-entry-heading">
-        <div>
-          <span class="eyebrow">Now Watching</span>
-          <h3>${escapeHtml(title)}</h3>
-        </div>
-        <div class="watch-entry-actions">
-          <a class="external-link" href="${escapeHtml(channel.url)}" target="_blank" rel="noreferrer">
-            <span>前往 Twitch</span>
-            <i data-lucide="external-link" aria-hidden="true"></i>
-          </a>
-        </div>
-      </div>
-      <div class="watch-grid">
-        <iframe
-          class="player-frame"
-          src="${playerUrl}"
-          title="${escapeHtml(channel.label)} 直播"
-          allowfullscreen
-          allow="autoplay; fullscreen; picture-in-picture">
-        </iframe>
-        <iframe
-          class="chat-frame"
-          src="${chatUrl}"
-          title="${escapeHtml(channel.label)} 聊天室"
-          sandbox="allow-storage-access-by-user-activation allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox allow-modals">
-        </iframe>
-      </div>
-    </article>
-  `;
+  const header = document.createElement("div");
+  header.className = "canvas-window-header";
+  header.addEventListener("pointerdown", (event) => startCanvasWindowDrag(event, key));
+
+  const grip = document.createElement("span");
+  grip.className = "canvas-window-grip";
+  grip.innerHTML = '<i data-lucide="grip" aria-hidden="true"></i>';
+
+  const title = document.createElement("span");
+  title.className = "canvas-window-title";
+  title.textContent = getCanvasWindowTitle(channel, type);
+
+  const actions = document.createElement("div");
+  actions.className = "canvas-window-actions";
+  const refreshButton = createCanvasWindowButton("refresh-cw", "重新整理", () =>
+    refreshCanvasWindow(key)
+  );
+  const closeButton = createCanvasWindowButton("x", "關閉", () => closeCanvasWindow(key));
+  actions.append(refreshButton, closeButton);
+  header.append(grip, title, actions);
+
+  const body = document.createElement("div");
+  body.className = "canvas-window-body";
+  if (type.id === "player") {
+    body.append(createPlayerIframe(channel.login));
+  } else {
+    body.append(createChatIframe(channel));
+  }
+
+  windowElement.addEventListener("pointerdown", () => bringCanvasWindowToFront(key));
+  windowElement.append(header, body);
+  ensureCanvasWindowLayout(key, channelIndex, type.id);
+  return windowElement;
+}
+
+function updateCanvasWindow(windowElement, channel, type) {
+  windowElement.querySelector(".canvas-window-title").textContent = getCanvasWindowTitle(
+    channel,
+    type
+  );
+
+  const iframe = windowElement.querySelector("iframe");
+  if (!iframe) return;
+  iframe.title = getCanvasWindowTitle(channel, type);
+}
+
+function createCanvasWindowButton(icon, label, handler) {
+  const button = document.createElement("button");
+  button.className = "canvas-window-button";
+  button.type = "button";
+  button.title = label;
+  button.innerHTML = `<i data-lucide="${icon}" aria-hidden="true"></i><span class="sr-only">${label}</span>`;
+  button.addEventListener("pointerdown", (event) => event.stopPropagation());
+  button.addEventListener("click", handler);
+  return button;
+}
+
+function createPlayerIframe(login) {
+  const iframe = document.createElement("iframe");
+  iframe.src = getPlayerUrl(login);
+  iframe.title = `${login} 直播`;
+  iframe.allowFullscreen = true;
+  return iframe;
+}
+
+function createChatIframe(channel) {
+  const iframe = document.createElement("iframe");
+  iframe.src = getChatUrl(channel.login);
+  iframe.title = `${channel.displayName || channel.label} 聊天室`;
+  iframe.setAttribute(
+    "sandbox",
+    "allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox"
+  );
+  return iframe;
+}
+
+function refreshCanvasWindow(key) {
+  const iframe = elements.watchShell.querySelector(
+    `.canvas-window[data-window-key="${cssEscape(key)}"] iframe`
+  );
+  if (!iframe?.src) return;
+  iframe.src = iframe.src;
+}
+
+function closeCanvasWindow(key) {
+  const [login] = key.split(":");
+  state.closedWatchWindows.add(key);
+  delete state.watchWindows[key];
+  unobserveCanvasWindowResize(key);
+
+  const allClosed = WATCH_WINDOW_TYPES.every((type) =>
+    state.closedWatchWindows.has(getWatchWindowKey(login, type.id))
+  );
+  if (allClosed) {
+    state.selectedLogins = state.selectedLogins.filter((item) => item !== login);
+    removeWatchWindowState(login);
+    renderChannels();
+  }
+
+  renderWatch();
+}
+
+function startCanvasWindowDrag(event, key) {
+  if (event.button !== 0 || event.target.closest(".canvas-window-button")) return;
+
+  const windowElement = event.currentTarget.closest(".canvas-window");
+  const canvas = elements.watchShell.querySelector(".watch-canvas");
+  if (!windowElement || !canvas) return;
+
+  event.preventDefault();
+  bringCanvasWindowToFront(key);
+
+  const canvasRect = canvas.getBoundingClientRect();
+  const windowRect = windowElement.getBoundingClientRect();
+  const pointerOffset = {
+    x: event.clientX - windowRect.left,
+    y: event.clientY - windowRect.top,
+  };
+
+  function moveWindow(moveEvent) {
+    const layout = state.watchWindows[key];
+    if (!layout) return;
+
+    layout.x = Math.max(0, Math.round(moveEvent.clientX - canvasRect.left - pointerOffset.x));
+    layout.y = Math.max(0, Math.round(moveEvent.clientY - canvasRect.top - pointerOffset.y));
+    windowElement.style.left = `${layout.x}px`;
+    windowElement.style.top = `${layout.y}px`;
+  }
+
+  function stopMove() {
+    document.removeEventListener("pointermove", moveWindow);
+    document.removeEventListener("pointerup", stopMove);
+  }
+
+  document.addEventListener("pointermove", moveWindow);
+  document.addEventListener("pointerup", stopMove, { once: true });
+}
+
+function applyCanvasWindowLayout(windowElement, key, channelIndex, typeId, canvas) {
+  const layout = ensureCanvasWindowLayout(key, channelIndex, typeId, canvas);
+  windowElement.style.left = `${layout.x}px`;
+  windowElement.style.top = `${layout.y}px`;
+  windowElement.style.width = `${layout.width}px`;
+  windowElement.style.height = `${layout.height}px`;
+  windowElement.style.zIndex = layout.z;
+}
+
+function ensureCanvasWindowLayout(key, channelIndex, typeId, canvas) {
+  if (!state.watchWindows[key]) {
+    state.watchWindows[key] = getDefaultCanvasWindowLayout(channelIndex, typeId, canvas);
+  }
+  return state.watchWindows[key];
+}
+
+function getDefaultCanvasWindowLayout(channelIndex, typeId, canvas) {
+  const width = Math.max(980, canvas?.clientWidth || elements.watchShell.clientWidth || 1180);
+  const rowTop = 24 + channelIndex * 470;
+  const playerWidth = Math.max(520, Math.round(width * 0.58));
+  const chatWidth = Math.max(340, width - playerWidth - 72);
+
+  if (typeId === "chat") {
+    return {
+      x: playerWidth + 48,
+      y: rowTop + 20,
+      width: chatWidth,
+      height: 430,
+      z: ++state.nextWindowZ,
+    };
+  }
+
+  return {
+    x: 24,
+    y: rowTop + 120,
+    width: playerWidth,
+    height: 430,
+    z: ++state.nextWindowZ,
+  };
+}
+
+function syncWatchCanvasHeight(canvas, selectedCount) {
+  canvas.style.minHeight = `${Math.max(760, 620 + (selectedCount - 1) * 470)}px`;
+}
+
+function observeCanvasWindowResize(windowElement, key) {
+  if (watchResizeObservers.has(key) || !window.ResizeObserver) return;
+
+  const observer = new ResizeObserver(([entry]) => {
+    const layout = state.watchWindows[key];
+    if (!layout) return;
+    layout.width = Math.round(entry.contentRect.width);
+    layout.height = Math.round(entry.contentRect.height);
+  });
+  observer.observe(windowElement);
+  watchResizeObservers.set(key, observer);
+}
+
+function unobserveCanvasWindowResize(key) {
+  watchResizeObservers.get(key)?.disconnect();
+  watchResizeObservers.delete(key);
+}
+
+function bringCanvasWindowToFront(key) {
+  const layout = state.watchWindows[key];
+  if (!layout) return;
+  layout.z = ++state.nextWindowZ;
+  const windowElement = elements.watchShell.querySelector(
+    `.canvas-window[data-window-key="${cssEscape(key)}"]`
+  );
+  if (windowElement) windowElement.style.zIndex = layout.z;
+}
+
+function clearWatchWindows() {
+  watchResizeObservers.forEach((observer) => observer.disconnect());
+  watchResizeObservers.clear();
+  state.watchWindows = {};
+  state.closedWatchWindows.clear();
+}
+
+function removeWatchWindowState(login) {
+  WATCH_WINDOW_TYPES.forEach((type) => {
+    const key = getWatchWindowKey(login, type.id);
+    delete state.watchWindows[key];
+    state.closedWatchWindows.delete(key);
+    unobserveCanvasWindowResize(key);
+  });
+}
+
+function clearClosedWatchWindows(login) {
+  WATCH_WINDOW_TYPES.forEach((type) => {
+    state.closedWatchWindows.delete(getWatchWindowKey(login, type.id));
+  });
+}
+
+function getCanvasWindowTitle(channel, type) {
+  return `${channel.displayName || channel.label} ${type.label}`;
+}
+
+function getWatchWindowKey(login, typeId) {
+  return `${login}:${typeId}`;
+}
+
+function getPlayerUrl(login) {
+  return `https://player.twitch.tv/?channel=${encodeURIComponent(login)}&${getTwitchParentParams()}&muted=false`;
+}
+
+function getChatUrl(login) {
+  return `https://www.twitch.tv/embed/${encodeURIComponent(login)}/chat?${getTwitchParentParams()}&darkpopout`;
+}
+
+function getTwitchParentParams() {
+  return getTwitchParents()
+    .map((parent) => `parent=${encodeURIComponent(parent)}`)
+    .join("&");
+}
+
+function cssEscape(value) {
+  return window.CSS?.escape ? window.CSS.escape(value) : String(value).replaceAll('"', '\\"');
 }
 
 function getTwitchParents() {
+  if (window.location.protocol === "file:") return ["localhost"];
+  if (["127.0.0.1", "0.0.0.0"].includes(window.location.hostname)) return ["localhost"];
   if (window.location.hostname) return [window.location.hostname];
   return ["localhost"];
 }
