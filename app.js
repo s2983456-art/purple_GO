@@ -5,6 +5,7 @@ const PREVIEW_WIDTH = 320;
 const PREVIEW_HEIGHT = 180;
 const LIVE_PREVIEW_MIN_BYTES = 4096;
 const OFFLINE_PREVIEW_MAX_AGE = 3600;
+const CUSTOM_CHANNELS_KEY = "purple-go:custom-channels";
 
 const RESERVED_TWITCH_PATHS = new Set([
   "about",
@@ -57,6 +58,14 @@ const elements = {
   unknownCount: document.querySelector("#unknownCount"),
   refreshButton: document.querySelector("#refreshButton"),
   pickTwoButton: document.querySelector("#pickTwoButton"),
+  addChannelButton: document.querySelector("#addChannelButton"),
+  addChannelDialog: document.querySelector("#addChannelDialog"),
+  addChannelForm: document.querySelector("#addChannelForm"),
+  closeAddChannelButton: document.querySelector("#closeAddChannelButton"),
+  cancelAddChannelButton: document.querySelector("#cancelAddChannelButton"),
+  customChannelInput: document.querySelector("#customChannelInput"),
+  customChannelMenu: document.querySelector("#customChannelMenu"),
+  removeCustomChannelButton: document.querySelector("#removeCustomChannelButton"),
   searchInput: document.querySelector("#searchInput"),
   channelGrid: document.querySelector("#channelGrid"),
   emptyState: document.querySelector("#emptyState"),
@@ -70,6 +79,7 @@ const elements = {
 async function init() {
   bindEvents();
   await loadChannels();
+  loadCustomChannels();
   await loadGeneratedStatus();
   render();
   refreshLiveStatus();
@@ -78,6 +88,16 @@ async function init() {
 function bindEvents() {
   elements.refreshButton.addEventListener("click", () => refreshLiveStatus());
   elements.pickTwoButton.addEventListener("click", () => pickRandomLiveChannels(2));
+  elements.addChannelButton.addEventListener("click", () => openAddChannelDialog());
+  elements.closeAddChannelButton.addEventListener("click", () => closeAddChannelDialog());
+  elements.cancelAddChannelButton.addEventListener("click", () => closeAddChannelDialog());
+  elements.addChannelForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+    addCustomChannel(elements.customChannelInput.value);
+  });
+  elements.removeCustomChannelButton.addEventListener("click", () => {
+    removeCustomChannel(elements.customChannelMenu.dataset.login);
+  });
   elements.watchLayoutButton.addEventListener("click", () => toggleWatchLayout());
 
   elements.searchInput.addEventListener("input", (event) => {
@@ -85,15 +105,49 @@ function bindEvents() {
     renderChannels();
   });
 
+  elements.channelGrid.addEventListener("contextmenu", (event) => {
+    const card = event.target.closest(".channel-card");
+    if (!card) {
+      hideCustomChannelMenu();
+      return;
+    }
+
+    const channel = state.channels.find((item) => item.login === card.dataset.login);
+    if (!channel?.isCustom) {
+      hideCustomChannelMenu();
+      return;
+    }
+
+    event.preventDefault();
+    showCustomChannelMenu(channel.login, event.clientX, event.clientY);
+  });
+
+  document.addEventListener("click", (event) => {
+    if (elements.customChannelMenu.hidden || elements.customChannelMenu.contains(event.target)) {
+      return;
+    }
+    hideCustomChannelMenu();
+  });
+
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") hideCustomChannelMenu();
+  });
+
+  window.addEventListener("resize", () => hideCustomChannelMenu());
+
   document.querySelectorAll(".segment-button").forEach((button) => {
     button.addEventListener("click", () => {
-      state.filter = button.dataset.filter;
-      document.querySelectorAll(".segment-button").forEach((item) => {
-        item.classList.toggle("active", item === button);
-      });
-      renderChannels();
+      setFilter(button.dataset.filter);
     });
   });
+}
+
+function setFilter(filter) {
+  state.filter = filter;
+  document.querySelectorAll(".segment-button").forEach((item) => {
+    item.classList.toggle("active", item.dataset.filter === filter);
+  });
+  renderChannels();
 }
 
 async function loadChannels() {
@@ -178,6 +232,7 @@ function extractChannels(rows) {
         url: `https://www.twitch.tv/${login}`,
         status: existing?.status || "unknown",
         isLive: existing?.isLive || false,
+        isSheetChannel: true,
       });
     });
   });
@@ -207,6 +262,133 @@ function findLabelForRow(cells, login) {
     cells.find((cell) => cell.toLowerCase().includes(login)) ||
     login
   );
+}
+
+function loadCustomChannels() {
+  readCustomChannels().forEach((channel) => {
+    upsertCustomChannel(channel.login, channel.label || channel.login);
+  });
+}
+
+function readCustomChannels() {
+  try {
+    const payload = JSON.parse(localStorage.getItem(CUSTOM_CHANNELS_KEY) || "[]");
+    if (!Array.isArray(payload)) return [];
+    return payload.filter((item) => item?.login);
+  } catch {
+    return [];
+  }
+}
+
+function saveCustomChannels() {
+  const customChannels = state.channels
+    .filter((channel) => channel.isCustom)
+    .map((channel) => ({
+      login: channel.login,
+      label: channel.label,
+    }));
+  localStorage.setItem(CUSTOM_CHANNELS_KEY, JSON.stringify(customChannels));
+}
+
+function openAddChannelDialog() {
+  elements.customChannelInput.value = "";
+  if (typeof elements.addChannelDialog.showModal === "function") {
+    elements.addChannelDialog.showModal();
+  } else {
+    elements.addChannelDialog.setAttribute("open", "");
+  }
+  elements.customChannelInput.focus();
+}
+
+function closeAddChannelDialog() {
+  elements.addChannelDialog.close();
+}
+
+function addCustomChannel(value) {
+  const login = normalizeCustomLogin(value);
+  if (!login) {
+    updateStatusLine("請輸入有效的 Twitch 帳號或連結");
+    return;
+  }
+
+  upsertCustomChannel(login, login);
+  saveCustomChannels();
+  closeAddChannelDialog();
+  setFilter("all");
+  render();
+  updateStatusLine(`已新增 @${login}`);
+  refreshLiveStatus();
+}
+
+function removeCustomChannel(login) {
+  const channel = state.channels.find((item) => item.login === login);
+  if (!channel?.isCustom) return;
+
+  if (channel.isSheetChannel) {
+    channel.isCustom = false;
+  } else {
+    state.channels = state.channels.filter((item) => item.login !== login);
+    state.selectedLogins = state.selectedLogins.filter((item) => item !== login);
+  }
+
+  saveCustomChannels();
+  hideCustomChannelMenu();
+  render();
+  updateStatusLine(`已移除 @${login}`);
+}
+
+function showCustomChannelMenu(login, x, y) {
+  elements.customChannelMenu.dataset.login = login;
+  elements.customChannelMenu.hidden = false;
+  elements.customChannelMenu.style.left = "0px";
+  elements.customChannelMenu.style.top = "0px";
+
+  const rect = elements.customChannelMenu.getBoundingClientRect();
+  const maxLeft = Math.max(8, window.innerWidth - rect.width - 8);
+  const maxTop = Math.max(8, window.innerHeight - rect.height - 8);
+  const left = Math.min(Math.max(8, x), maxLeft);
+  const top = Math.min(Math.max(8, y), maxTop);
+
+  elements.customChannelMenu.style.left = `${left}px`;
+  elements.customChannelMenu.style.top = `${top}px`;
+  elements.removeCustomChannelButton.focus({ preventScroll: true });
+}
+
+function hideCustomChannelMenu() {
+  elements.customChannelMenu.hidden = true;
+  delete elements.customChannelMenu.dataset.login;
+}
+
+function upsertCustomChannel(login, label) {
+  const existing = state.channels.find((channel) => channel.login === login);
+  if (existing) {
+    existing.isCustom = true;
+    existing.label = existing.label || label;
+    return;
+  }
+
+  state.channels = [
+    ...state.channels,
+    {
+      login,
+      label,
+      url: `https://www.twitch.tv/${login}`,
+      status: "unknown",
+      isLive: false,
+      isCustom: true,
+      isSheetChannel: false,
+    },
+  ].sort((a, b) => a.label.localeCompare(b.label, "zh-Hant"));
+}
+
+function normalizeCustomLogin(value) {
+  const trimmed = String(value || "").trim();
+  if (!trimmed) return "";
+
+  const fromUrl = loginFromTwitchUrl(
+    /^https?:\/\//i.test(trimmed) ? trimmed : `https://www.twitch.tv/${trimmed}`
+  );
+  return fromUrl || "";
 }
 
 async function loadGeneratedStatus() {
@@ -458,12 +640,15 @@ function renderChannelCard(channel) {
     ? [channel.gameName, formatViewerCount(channel.viewerCount)].filter(Boolean).join(" · ") || "直播中"
     : "";
 
+  const isButtonDisabled = !channel.isLive && !channel.isCustom;
+
   return `
     <button
-      class="channel-card ${channel.isLive ? "is-live" : ""} ${state.selectedLogins.includes(channel.login) ? "is-selected" : ""}"
+      class="channel-card ${channel.isLive ? "is-live" : ""} ${channel.isCustom ? "is-custom" : ""} ${state.selectedLogins.includes(channel.login) ? "is-selected" : ""}"
       type="button"
       data-login="${escapeHtml(channel.login)}"
-      ${channel.isLive ? "" : "disabled"}
+      ${isButtonDisabled ? "disabled" : ""}
+      aria-disabled="${channel.isLive ? "false" : "true"}"
       aria-pressed="${state.selectedLogins.includes(channel.login) ? "true" : "false"}"
     >
       <span class="channel-main">

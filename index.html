@@ -65,6 +65,10 @@
               <i data-lucide="shuffle" aria-hidden="true"></i>
               <span>幫我挑兩個</span>
             </button>
+            <button class="pick-button add-button" id="addChannelButton" type="button">
+              <i data-lucide="plus" aria-hidden="true"></i>
+              <span>新增</span>
+            </button>
           </div>
           <span id="sourceBadge" class="source-badge">Sheet</span>
         </div>
@@ -91,6 +95,44 @@
         </div>
       </section>
     </main>
+
+    <dialog class="settings-dialog" id="addChannelDialog">
+      <form method="dialog" class="settings-panel" id="addChannelForm">
+        <div class="dialog-heading">
+          <div>
+            <span class="eyebrow">Custom Channel</span>
+            <h2>新增直播主</h2>
+          </div>
+          <button class="icon-button square ghost" type="button" id="closeAddChannelButton" title="關閉">
+            <i data-lucide="x" aria-hidden="true"></i>
+            <span class="sr-only">關閉</span>
+          </button>
+        </div>
+
+        <label class="field">
+          <span>Twitch 帳號或連結</span>
+          <input id="customChannelInput" name="customChannel" type="text" placeholder="例如 wuwu_ttv 或 https://www.twitch.tv/wuwu_ttv" spellcheck="false" autocomplete="off">
+        </label>
+
+        <div class="dialog-actions">
+          <button class="icon-button secondary" type="button" id="cancelAddChannelButton">
+            <i data-lucide="x" aria-hidden="true"></i>
+            <span>取消</span>
+          </button>
+          <button class="icon-button" value="add" type="submit">
+            <i data-lucide="plus" aria-hidden="true"></i>
+            <span>加入</span>
+          </button>
+        </div>
+      </form>
+    </dialog>
+
+    <div class="context-menu" id="customChannelMenu" hidden role="menu" aria-label="自訂頻道選單">
+      <button type="button" id="removeCustomChannelButton" role="menuitem">
+        <i data-lucide="trash-2" aria-hidden="true"></i>
+        <span>移除</span>
+      </button>
+    </div>
 
   </body>
 </html>

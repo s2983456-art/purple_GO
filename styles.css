@@ -343,6 +343,14 @@ main {
   border-color: var(--accent);
 }
 
+.add-button {
+  border-color: rgba(241, 189, 103, 0.52);
+}
+
+.add-button:hover {
+  border-color: var(--warn);
+}
+
 .pick-button:focus-visible {
   outline: 3px solid rgba(155, 124, 255, 0.32);
   outline-offset: 2px;
@@ -393,6 +401,17 @@ main {
   border-color: rgba(46, 211, 159, 0.36);
 }
 
+.channel-card.is-custom {
+  background:
+    linear-gradient(135deg, rgba(241, 189, 103, 0.2), rgba(241, 189, 103, 0.06)),
+    var(--panel);
+  border-color: rgba(241, 189, 103, 0.72);
+}
+
+.channel-card.is-custom .channel-name {
+  color: #ffe1a1;
+}
+
 .channel-card.is-selected,
 .channel-card.is-live:hover {
   transform: translateY(-2px);
@@ -404,6 +423,10 @@ main {
   cursor: default;
   color: var(--text);
   opacity: 1;
+}
+
+.channel-card[aria-disabled="true"] {
+  cursor: default;
 }
 
 .channel-card:disabled:hover {
@@ -657,6 +680,49 @@ main {
   background: #141218;
   border: 1px solid var(--line);
   border-radius: 8px;
+}
+
+.context-menu[hidden] {
+  display: none;
+}
+
+.context-menu {
+  position: fixed;
+  z-index: 20;
+  min-width: 148px;
+  padding: 6px;
+  background: #18151d;
+  border: 1px solid rgba(241, 189, 103, 0.46);
+  border-radius: 8px;
+  box-shadow: var(--shadow);
+}
+
+.context-menu button {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  gap: 8px;
+  min-height: 36px;
+  padding: 0 10px;
+  color: var(--text);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  text-align: left;
+}
+
+.context-menu button:hover,
+.context-menu button:focus-visible {
+  color: #ffe1a1;
+  background: var(--warn-soft);
+  border-color: rgba(241, 189, 103, 0.4);
+  outline: none;
+}
+
+.context-menu i {
+  flex: 0 0 16px;
+  width: 16px;
+  height: 16px;
 }
 
 @media (max-width: 860px) {
