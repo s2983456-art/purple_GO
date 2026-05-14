@@ -42,6 +42,7 @@ const state = {
   filter: "live",
   query: "",
   selectedLogins: [],
+  watchLayout: "paired",
   statusSource: "Sheet",
   lastUpdated: "",
   isRefreshing: false,
@@ -61,7 +62,8 @@ const elements = {
   emptyState: document.querySelector("#emptyState"),
   sourceBadge: document.querySelector("#sourceBadge"),
   watchTitle: document.querySelector("#watchTitle"),
-  watchLink: document.querySelector("#watchLink"),
+  watchLayoutButton: document.querySelector("#watchLayoutButton"),
+  watchLayoutLabel: document.querySelector("#watchLayoutLabel"),
   watchShell: document.querySelector("#watchShell"),
 };
 
@@ -76,6 +78,7 @@ async function init() {
 function bindEvents() {
   elements.refreshButton.addEventListener("click", () => refreshLiveStatus());
   elements.pickTwoButton.addEventListener("click", () => pickRandomLiveChannels(2));
+  elements.watchLayoutButton.addEventListener("click", () => toggleWatchLayout());
 
   elements.searchInput.addEventListener("input", (event) => {
     state.query = event.target.value.trim().toLowerCase();
@@ -408,6 +411,11 @@ function toggleSelectedChannel(login) {
   state.selectedLogins = [...state.selectedLogins, login];
 }
 
+function toggleWatchLayout() {
+  state.watchLayout = state.watchLayout === "paired" ? "single" : "paired";
+  renderWatch();
+}
+
 function pickRandomLiveChannels(count) {
   const liveChannels = state.channels.filter((channel) => channel.isLive);
   const picked = shuffle(liveChannels)
@@ -476,7 +484,7 @@ function renderWatch() {
 
   if (!selectedChannels.length) {
     elements.watchTitle.textContent = "選擇開台中的頻道";
-    elements.watchLink.hidden = true;
+    elements.watchLayoutButton.hidden = true;
     elements.watchShell.className = "watch-shell";
     elements.watchShell.innerHTML = `
       <div class="watch-placeholder">
@@ -493,8 +501,14 @@ function renderWatch() {
     .map((parent) => `parent=${encodeURIComponent(parent)}`)
     .join("&");
   elements.watchTitle.textContent = `已選擇 ${selectedChannels.length} 個頻道`;
-  elements.watchLink.hidden = true;
-  elements.watchShell.className = "watch-shell has-streams";
+  elements.watchLayoutButton.hidden = false;
+  elements.watchLayoutButton.setAttribute(
+    "aria-pressed",
+    state.watchLayout === "paired" ? "true" : "false"
+  );
+  elements.watchLayoutLabel.textContent =
+    state.watchLayout === "paired" ? "不要並排" : "兩兩並排";
+  elements.watchShell.className = `watch-shell has-streams layout-${state.watchLayout}`;
   elements.watchShell.innerHTML = `
     <div class="watch-stack">
       ${selectedChannels.map((channel) => renderWatchEntry(channel, parentParams)).join("")}
@@ -515,10 +529,12 @@ function renderWatchEntry(channel, parentParams) {
           <span class="eyebrow">Now Watching</span>
           <h3>${escapeHtml(title)}</h3>
         </div>
-        <a class="external-link" href="${escapeHtml(channel.url)}" target="_blank" rel="noreferrer">
-          <span>前往 Twitch</span>
-          <i data-lucide="external-link" aria-hidden="true"></i>
-        </a>
+        <div class="watch-entry-actions">
+          <a class="external-link" href="${escapeHtml(channel.url)}" target="_blank" rel="noreferrer">
+            <span>前往 Twitch</span>
+            <i data-lucide="external-link" aria-hidden="true"></i>
+          </a>
+        </div>
       </div>
       <div class="watch-grid">
         <iframe
